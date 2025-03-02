@@ -2,58 +2,52 @@ import streamlit as st
 import numpy as np
 import cv2
 from tensorflow.keras.models import load_model
+from skimage import segmentation, color
 from sklearn.preprocessing import StandardScaler
 import skimage.feature as skf
 from PIL import Image
 
 # Load trained model
-model = load_model("crack_detection_model.h5")  # Ensure the model file is in the same directory
+model = load_model("trained_model.h5")  # Ensure the model file is in the same directory
 
-def GraphSegmentation(image):
-    image = np.array(image.convert("RGB"))  # Convert PIL image to NumPy array
-    image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)  # Convert to BGR for OpenCV
-
-    # Define mask for GrabCut
-    row, col, _ = image.shape
-    mask = np.zeros((row, col), np.uint8)
-
-    # Initialize models correctly
-    bgdModel = np.zeros((1, 65), np.float64)  # Background model
-    fgdModel = np.zeros((1, 65), np.float64)  # Foreground model
-
-    rect = (1, 1, col - 2, row - 2)  # Ensure valid rectangle coordinates
-
-    # Run GrabCut
-    cv2.grabCut(image, mask, rect, bgdModel, fgdModel, 5, cv2.GC_INIT_WITH_RECT)
-
-    # Modify mask to extract foreground
-    mask2 = np.where((mask == 2) | (mask == 0), 0, 1).astype("uint8")
-    segmented = image * mask2[:, :, np.newaxis]
+def graph_based_segmentation(image):
+    # Convert PIL image to NumPy array
+    image = np.array(image)
     
-    return segmented
+    # Apply graph-based segmentation
+    segments = segmentation.slic(image, compactness=30, n_segments=400)
+    segmented_image = color.label2rgb(segments, image, kind='avg')
+    return segmented_image, segments
 
-def ExtractFeatures(image):
-    """Extract texture and edge features for crack classification."""
-    if len(image.shape) == 3:  
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
-    edges = cv2.Canny(image, 50, 150)
-    edge_count = np.sum(edges > 0)
-
-    _, binary_mask = cv2.threshold(image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    binary_mask = binary_mask // 255  # Normalize to 0 and 1
+def extract_crack_features(image, segments):
+    features = []
+    for segment_label in np.unique(segments):
+        mask = segments == segment_label
+        segment_image = image * mask[:, :, np.newaxis]
+        gray_segment = cv2.cvtColor(segment_image.astype(np.uint8), cv2.COLOR_BGR2GRAY)
+        
+        # Calculate GLCM features
+        glcm = skf.graycomatrix(gray_segment, distances=[1], angles=[0], symmetric=True, normed=True)
+        contrast = skf.graycoprops(glcm, 'contrast')
+        dissimilarity = skf.graycoprops(glcm, 'dissimilarity')
+        homogeneity = skf.graycoprops(glcm, 'homogeneity')
+        energy = skf.graycoprops(glcm, 'energy')
+        correlation = skf.graycoprops(glcm, 'correlation')
+        
+        # Calculate edge count using Canny edge detection
+        edges = cv2.Canny(gray_segment, threshold1=50, threshold2=150)  # Adjust thresholds for crack detection
+        edge_count = np.sum(edges > 0)  # Count the number of edge pixels
+        
+        # Calculate edge density (edges per pixel)
+        edge_density = edge_count / (gray_segment.shape[0] * gray_segment.shape[1])
+        
+        # Append features
+        features.append([
+            contrast[0, 0], dissimilarity[0, 0], homogeneity[0, 0], energy[0, 0], correlation[0, 0],
+            edge_count, edge_density
+        ])
     
-    crack_pixels = np.sum(binary_mask)
-    total_pixels = binary_mask.size
-    crack_ratio = crack_pixels / total_pixels
-
-    glcm = skf.graycomatrix(image, distances=[1], angles=[0], levels=256, symmetric=True, normed=True)
-    contrast = skf.graycoprops(glcm, 'contrast')[0, 0]
-    correlation = skf.graycoprops(glcm, 'correlation')[0, 0]
-    energy = skf.graycoprops(glcm, 'energy')[0, 0]
-    homogeneity = skf.graycoprops(glcm, 'homogeneity')[0, 0]
-    
-    return [crack_ratio, edge_count, contrast, correlation, energy, homogeneity]
+    return np.array(features)
 
 # Streamlit UI
 st.title("Surface Crack Detection 🚧")
@@ -66,17 +60,32 @@ if uploaded_file is not None:
     st.image(image, caption="Uploaded Image", use_column_width=True)
 
     if st.button("Classify"):
-        segmented = GraphSegmentation(image)
-        features = ExtractFeatures(segmented)
+        # Convert PIL image to NumPy array
+        image_np = np.array(image)
+        
+        # Perform graph-based segmentation
+        segmented_image, segments = graph_based_segmentation(image_np)
+        
+        # Extract GLCM features
+        features = extract_crack_features(segmented_image, segments)
 
-        # Convert features to NumPy array for model prediction
-        data = np.array(features).reshape(1, -1)
+        # Average features across segments
+        avg_features = np.mean(features, axis=0)
+
+        # Reshape features to match the model's input shape
+        data = np.expand_dims(avg_features, axis=0)
+
+        # Debug: Print the shape of the extracted features
+        st.write(f"Extracted features shape: {data.shape}")
+
+        # Standardize the features (if required)
         scaler = StandardScaler()
         standardized_data = scaler.fit_transform(data)
 
         # Predict using trained model
-        prediction = model.predict(data)
+        prediction = model.predict(standardized_data)
         st.write(prediction)
+        
         # Interpret result
         result = "Crack Detected 🚨" if prediction[0][0] > 0.5 else "No Crack ✅"
         confidence = prediction[0][0] * 100 if prediction[0][0] > 0.5 else (1 - prediction[0][0]) * 100

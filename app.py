@@ -1,95 +1,70 @@
-import streamlit as st
+import os
 import numpy as np
 import cv2
+import streamlit as st
 from tensorflow.keras.models import load_model
-from skimage import segmentation, color
-from sklearn.preprocessing import StandardScaler
-import skimage.feature as skf
-from PIL import Image
+
+# Define image dimensions
+IMG_HEIGHT, IMG_WIDTH = 128, 128
 
 # Load trained model
-model = load_model("trained_model.h5")  # Ensure the model file is in the same directory
+MODEL_PATH = "crack_detection_model.h5"
+model = load_model(MODEL_PATH)
 
-def graph_based_segmentation(image):
-    # Convert PIL image to NumPy array
-    image = np.array(image)
-    
-    # Apply graph-based segmentation
-    segments = segmentation.slic(image, compactness=30, n_segments=400)
-    segmented_image = color.label2rgb(segments, image, kind='avg')
-    return segmented_image, segments
+def preprocess_image(image):
+    resized_image = cv2.resize(image, (IMG_HEIGHT, IMG_WIDTH))
+    normalized_image = resized_image / 255.0
+    reshaped_image = np.expand_dims(normalized_image, axis=0)
+    return reshaped_image
 
-def extract_crack_features(image, segments):
-    features = []
-    for segment_label in np.unique(segments):
-        mask = segments == segment_label
-        segment_image = image * mask[:, :, np.newaxis]
-        gray_segment = cv2.cvtColor(segment_image.astype(np.uint8), cv2.COLOR_BGR2GRAY)
-        
-        # Calculate GLCM features
-        glcm = skf.graycomatrix(gray_segment, distances=[1], angles=[0], symmetric=True, normed=True)
-        contrast = skf.graycoprops(glcm, 'contrast')
-        dissimilarity = skf.graycoprops(glcm, 'dissimilarity')
-        homogeneity = skf.graycoprops(glcm, 'homogeneity')
-        energy = skf.graycoprops(glcm, 'energy')
-        correlation = skf.graycoprops(glcm, 'correlation')
-        
-        # Calculate edge count using Canny edge detection
-        edges = cv2.Canny(gray_segment, threshold1=50, threshold2=150)  # Adjust thresholds for crack detection
-        edge_count = np.sum(edges > 0)  # Count the number of edge pixels
-        
-        # Calculate edge density (edges per pixel)
-        edge_density = edge_count / (gray_segment.shape[0] * gray_segment.shape[1])
-        
-        # Append features
-        features.append([
-            contrast[0, 0], dissimilarity[0, 0], homogeneity[0, 0], energy[0, 0], correlation[0, 0],
-            edge_count, edge_density
-        ])
-    
-    return np.array(features)
+def predict_crack(image):
+    processed_image = preprocess_image(image)
+    prediction = model.predict(processed_image)[0]
+    return "Crack Detected" if np.argmax(prediction) == 1 else "No Crack"
 
-# Streamlit UI
-st.title("Surface Crack Detection 🚧")
-st.write("Upload an image to classify it as **Crack** or **No Crack**.")
+# Streamlit App
+st.title("Crack Detection Using CNN")
+st.write("Upload an image or use live detection to detect cracks.")
 
 uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "png", "jpeg"])
 
 if uploaded_file is not None:
-    image = Image.open(uploaded_file)
+    image = cv2.imdecode(np.frombuffer(uploaded_file.read(), np.uint8), 1)
     st.image(image, caption="Uploaded Image", use_column_width=True)
+    
+    st.write("### Crack Detection Result:")
+    result = predict_crack(image)
+    st.write(f"**{result}**")
 
-    if st.button("Classify"):
-        # Convert PIL image to NumPy array
-        image_np = np.array(image)
+# Live Detection using Webcam
+st.write("### Live Crack Detection")
+
+# Initialize session state for live detection
+if "live_detection" not in st.session_state:
+    st.session_state.live_detection = False
+
+if st.button("Start Live Detection"):
+    st.session_state.live_detection = True
+
+if st.session_state.live_detection:
+    cap = cv2.VideoCapture(0)
+    stframe = st.empty()
+
+    stop_button = st.button("Stop Detection")  # Placed outside loop
+
+    while st.session_state.live_detection:
+        ret, frame = cap.read()
+        if not ret:
+            break
         
-        # Perform graph-based segmentation
-        segmented_image, segments = graph_based_segmentation(image_np)
+        result = predict_crack(frame)
+        color = (0, 255, 0) if result == "No Crack" else (0, 0, 255)
+        cv2.putText(frame, result, (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
         
-        # Extract GLCM features
-        features = extract_crack_features(segmented_image, segments)
+        stframe.image(frame, channels="BGR")
 
-        # Average features across segments
-        avg_features = np.mean(features, axis=0)
-
-        # Reshape features to match the model's input shape
-        data = np.expand_dims(avg_features, axis=0)
-
-        # Debug: Print the shape of the extracted features
-        st.write(f"Extracted features shape: {data.shape}")
-
-        # Standardize the features (if required)
-        scaler = StandardScaler()
-        standardized_data = scaler.fit_transform(data)
-
-        # Predict using trained model
-        prediction = model.predict(standardized_data)
-        st.write(prediction)
-        
-        # Interpret result
-        result = "Crack Detected 🚨" if prediction[0][0] > 0.5 else "No Crack ✅"
-        confidence = prediction[0][0] * 100 if prediction[0][0] > 0.5 else (1 - prediction[0][0]) * 100
-        
-        # Display result
-        st.write(f"**Prediction:** {result}")
-        st.write(f"**Confidence:** {confidence:.2f}%")
+        if stop_button:
+            st.session_state.live_detection = False  # Stop loop
+            break
+    
+    cap.release()

@@ -1,6 +1,6 @@
 import os
-import numpy as np
 import cv2
+import numpy as np
 import streamlit as st
 from tensorflow.keras.models import load_model
 import skimage.feature as skf
@@ -14,8 +14,8 @@ MODEL_PATH = "crack_detection_model.h5"
 model_cnn = load_model(MODEL_PATH)
 
 # Load second model (feature-based)
-FEATURE_MODEL_PATH = "trained_model.h5"  # Replace with actual path
-model_feature_based = load_model(FEATURE_MODEL_PATH)  # Assuming it's a scikit-learn model
+FEATURE_MODEL_PATH = "trained_model.h5"
+model_feature_based = load_model(FEATURE_MODEL_PATH)
 
 def preprocess_image(image):
     resized_image = cv2.resize(image, (IMG_HEIGHT, IMG_WIDTH))
@@ -28,9 +28,7 @@ def predict_crack_cnn(image):
     prediction = model_cnn.predict(processed_image)[0]
     return "Crack Detected" if np.argmax(prediction) == 1 else "No Crack"
 
-
 def graph_based_segmentation(image):
-    # Apply graph-based segmentation
     segments = segmentation.slic(image, compactness=30, n_segments=400)
     segmented_image = color.label2rgb(segments, image, kind='avg')
     return segmented_image, segments
@@ -42,7 +40,6 @@ def extract_crack_features(image, segments):
         segment_image = image * mask[:, :, np.newaxis]
         gray_segment = cv2.cvtColor(segment_image.astype(np.uint8), cv2.COLOR_BGR2GRAY)
         
-        # Calculate GLCM features
         glcm = skf.graycomatrix(gray_segment, distances=[1], angles=[0], symmetric=True, normed=True)
         contrast = skf.graycoprops(glcm, 'contrast')
         dissimilarity = skf.graycoprops(glcm, 'dissimilarity')
@@ -50,30 +47,20 @@ def extract_crack_features(image, segments):
         energy = skf.graycoprops(glcm, 'energy')
         correlation = skf.graycoprops(glcm, 'correlation')
         
-        # Calculate edge count using Canny edge detection
-        edges = cv2.Canny(gray_segment, threshold1=50, threshold2=150)  # Adjust thresholds for crack detection
-        edge_count = np.sum(edges > 0)  # Count the number of edge pixels
-        
-        # Calculate edge density (edges per pixel)
+        edges = cv2.Canny(gray_segment, 50, 150)
+        edge_count = np.sum(edges > 0)
         edge_density = edge_count / (gray_segment.shape[0] * gray_segment.shape[1])
         
-        # Append features
-        features.append([
-            contrast[0, 0], dissimilarity[0, 0], homogeneity[0, 0], energy[0, 0], correlation[0, 0],
-            edge_count,edge_density
-        ])
+        features.append([contrast[0, 0], dissimilarity[0, 0], homogeneity[0, 0], energy[0, 0], correlation[0, 0], edge_count, edge_density])
     
     return np.array(features)
+
 def predict_crack_feature_based(image):
     segmented_image, segments = graph_based_segmentation(image)
     features = extract_crack_features(image, segments)
     prediction = model_feature_based.predict(features)
-
-    # Ensure prediction is reduced to a single scalar/class label
     predicted_label = np.argmax(prediction) if len(prediction.shape) > 1 else prediction[0]
-    
     return "Crack Detected" if predicted_label == 1 else "No Crack"
-
 
 st.title("Crack Detection Using CNN & Feature-Based Model")
 st.write("Upload an image to compare the results of both models.")
@@ -86,11 +73,9 @@ if uploaded_file is not None:
     
     st.write("### Crack Detection Results:")
     
-    # CNN Model Prediction
     cnn_result = predict_crack_cnn(image)
     st.write(f"**CNN Model:** {cnn_result}")
 
-    # Feature-based Model Prediction
     feature_result = predict_crack_feature_based(image)
     st.write(f"**Image Features based Model:** {feature_result}")
 
@@ -105,9 +90,8 @@ if st.button("Start Live Detection"):
 if st.session_state.live_detection:
     cap = cv2.VideoCapture(0)
     stframe = st.empty()
-
-    stop_button = st.button("Stop Detection")  
-
+    stop_button = st.button("Stop Detection")
+    
     while st.session_state.live_detection:
         ret, frame = cap.read()
         if not ret:
@@ -118,7 +102,7 @@ if st.session_state.live_detection:
         cv2.putText(frame, result, (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
         
         stframe.image(frame, channels="BGR")
-
+        
         if stop_button:
             st.session_state.live_detection = False  
             break
